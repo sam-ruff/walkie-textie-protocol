@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test, clippy and no_std build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: riscv32imc-unknown-none-elf
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: no_std build
+        run: cargo build --target riscv32imc-unknown-none-elf
