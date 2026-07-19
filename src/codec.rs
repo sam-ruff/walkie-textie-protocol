@@ -87,6 +87,10 @@ pub fn encode_command(command: &Command) -> Vec<u8, MAX_FRAME_SIZE> {
         Command::GetVersion => build_raw(CommandId::GetVersion as u8, &[]),
         Command::Reboot => build_raw(CommandId::Reboot as u8, &[]),
         Command::LoraTx { data } => build_raw(CommandId::LoraTx as u8, data),
+        Command::SetSpreadingFactor { spreading_factor } => {
+            build_raw(CommandId::SetSpreadingFactor as u8, &[*spreading_factor])
+        }
+        Command::GetRadioConfig => build_raw(CommandId::GetRadioConfig as u8, &[]),
     };
     cobs_encode(&raw)
 }
@@ -110,6 +114,28 @@ pub fn parse_response(data: &[u8]) -> Result<Response, ParseError> {
             let rssi = i16::from_le_bytes([payload[split], payload[split + 1]]);
             let snr = payload[split + 2] as i8;
             Response::rx_packet(&payload[..split], rssi, snr).map_err(|_| ParseError::BadPayload)
+        }
+        Some(ResponseId::RadioConfig) => {
+            if payload.len() != 11 {
+                return Err(ParseError::BadPayload);
+            }
+            Ok(Response::RadioConfig {
+                frequency_hz: u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
+                spreading_factor: payload[4],
+                bandwidth_khz: u32::from_le_bytes([payload[5], payload[6], payload[7], payload[8]]),
+                coding_rate: payload[9],
+                tx_power_dbm: payload[10] as i8,
+            })
+        }
+        Some(ResponseId::TxRefused) => {
+            if payload.len() != 4 {
+                return Err(ParseError::BadPayload);
+            }
+            Ok(Response::TxRefused {
+                retry_after_secs: u32::from_le_bytes([
+                    payload[0], payload[1], payload[2], payload[3],
+                ]),
+            })
         }
         Some(ResponseId::Error) => {
             if payload.len() != 2 {
@@ -152,6 +178,18 @@ pub fn parse_command(data: &[u8]) -> Result<Command, ResponseStatus> {
             }
             Command::lora_tx(payload).map_err(|_: CapacityError| ResponseStatus::InvalidLength)
         }
+        Some(CommandId::SetSpreadingFactor) => {
+            if payload.len() != 1 {
+                return Err(ResponseStatus::InvalidLength);
+            }
+            Ok(Command::SetSpreadingFactor { spreading_factor: payload[0] })
+        }
+        Some(CommandId::GetRadioConfig) => {
+            if !payload.is_empty() {
+                return Err(ResponseStatus::InvalidLength);
+            }
+            Ok(Command::GetRadioConfig)
+        }
         None => Err(ResponseStatus::InvalidCommand),
     }
 }
@@ -169,6 +207,24 @@ pub fn encode_response(response: &Response) -> Vec<u8, MAX_FRAME_SIZE> {
             let _ = payload.extend_from_slice(&rssi.to_le_bytes());
             let _ = payload.push(*snr as u8);
             build_raw(ResponseId::RxPacket as u8, &payload)
+        }
+        Response::RadioConfig {
+            frequency_hz,
+            spreading_factor,
+            bandwidth_khz,
+            coding_rate,
+            tx_power_dbm,
+        } => {
+            let mut payload: Vec<u8, MAX_FRAME_SIZE> = Vec::new();
+            let _ = payload.extend_from_slice(&frequency_hz.to_le_bytes());
+            let _ = payload.push(*spreading_factor);
+            let _ = payload.extend_from_slice(&bandwidth_khz.to_le_bytes());
+            let _ = payload.push(*coding_rate);
+            let _ = payload.push(*tx_power_dbm as u8);
+            build_raw(ResponseId::RadioConfig as u8, &payload)
+        }
+        Response::TxRefused { retry_after_secs } => {
+            build_raw(ResponseId::TxRefused as u8, &retry_after_secs.to_le_bytes())
         }
         Response::Error { status, original_command_id } => {
             build_raw(ResponseId::Error as u8, &[*status as u8, *original_command_id])
@@ -230,6 +286,49 @@ mod tests {
             Response::TxComplete,
             Response::error(ResponseStatus::Timeout, CommandId::LoraTx),
         ] {
+            let decoded = cobs_decode(&encode_response(&resp)).unwrap();
+            assert_eq!(parse_response(&decoded), Ok(resp));
+        }
+    }
+
+    #[test]
+    fn radio_config_commands_round_trip_device_side() {
+        for cmd in [
+            Command::SetSpreadingFactor { spreading_factor: 12 },
+            Command::GetRadioConfig,
+        ] {
+            let decoded = cobs_decode(&encode_command(&cmd)).unwrap();
+            assert_eq!(parse_command(&decoded), Ok(cmd));
+        }
+    }
+
+    #[test]
+    fn radio_config_response_round_trips_backend_side() {
+        let resp = Response::RadioConfig {
+            frequency_hz: 869_525_000,
+            spreading_factor: 12,
+            bandwidth_khz: 250,
+            coding_rate: 8,
+            tx_power_dbm: 22,
+        };
+        let decoded = cobs_decode(&encode_response(&resp)).unwrap();
+        assert_eq!(parse_response(&decoded), Ok(resp));
+    }
+
+    #[test]
+    fn set_spreading_factor_requires_one_byte_payload() {
+        // GetRadioConfig's empty payload under the SetSpreadingFactor id.
+        let raw = build_raw(CommandId::SetSpreadingFactor as u8, &[]);
+        assert_eq!(parse_command(&raw), Err(ResponseStatus::InvalidLength));
+
+        let raw = build_raw(CommandId::SetSpreadingFactor as u8, &[7, 8]);
+        assert_eq!(parse_command(&raw), Err(ResponseStatus::InvalidLength));
+    }
+
+    #[test]
+    fn tx_refused_round_trips() {
+        for secs in [0u32, 1_800, u32::MAX] {
+            let resp = Response::TxRefused { retry_after_secs: secs };
             let decoded = cobs_decode(&encode_response(&resp)).unwrap();
             assert_eq!(parse_response(&decoded), Ok(resp));
         }
