@@ -236,6 +236,7 @@ pub fn encode_response(response: &Response) -> Vec<u8, MAX_FRAME_SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_LORA_PAYLOAD;
 
     // Known-answer vectors. The frame layout matches the firmware README; the
     // CRC-16-XMODEM values below were verified against the canonical algorithm
@@ -350,5 +351,22 @@ mod tests {
         let mut raw = cobs_decode(&encode_command(&Command::GetVersion)).unwrap();
         raw[0] = 0x00;
         assert_eq!(parse_command(&raw), Err(ResponseStatus::InvalidVersion));
+    }
+
+    #[test]
+    fn oversized_payloads_are_rejected_with_capacity_error() {
+        let too_big = [0xAB; MAX_LORA_PAYLOAD + 1];
+        assert_eq!(Command::lora_tx(&too_big), Err(CapacityError));
+        assert_eq!(Response::rx_packet(&too_big, -50, 5), Err(CapacityError));
+
+        let just_fits = [0xAB; MAX_LORA_PAYLOAD];
+        assert!(Command::lora_tx(&just_fits).is_ok());
+        assert!(Response::rx_packet(&just_fits, -50, 5).is_ok());
+    }
+
+    #[test]
+    fn oversized_frame_fails_cobs_decode_as_too_short() {
+        let too_big = [0x01; MAX_FRAME_SIZE + 1];
+        assert_eq!(cobs_decode(&too_big), Err(ParseError::TooShort));
     }
 }
