@@ -7,6 +7,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/sam-ruff/walkie-textie-protocol"
 
 [dependencies]
-heapless = "0.8"
+heapless = "0.9"
 corncobs = { version = "0.1", default-features = false }
 crc = "3"
