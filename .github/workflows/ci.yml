@@ -8,7 +8,7 @@ on:
 jobs:
   test:
     name: Test, clippy and no_std build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, large, dedicated]
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +31,7 @@ jobs:
     name: Semantic release
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, small]
     permissions:
       contents: write
       issues: write
