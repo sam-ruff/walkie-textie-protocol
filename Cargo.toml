@@ -2,11 +2,12 @@
 name = "wt-protocol"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.87"
 description = "Walkie Textie wire protocol: a COBS-framed, CRC-16 binary command/response codec shared by the ESP32 firmware and the phone app."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sam-ruff/walkie-textie-protocol"
 
 [dependencies]
-heapless = "0.9"
-corncobs = { version = "0.1", default-features = false }
-crc = "3"
+heapless = "0.9.3"
+corncobs = { version = "0.1.4", default-features = false }
+crc = "3.4.0"
