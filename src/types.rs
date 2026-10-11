@@ -158,11 +158,17 @@ pub enum Response {
 
 impl Response {
     pub fn error(status: ResponseStatus, command_id: CommandId) -> Self {
-        Self::Error { status, original_command_id: command_id as u8 }
+        Self::Error {
+            status,
+            original_command_id: command_id as u8,
+        }
     }
 
     pub fn error_raw(status: ResponseStatus, original_command_id: u8) -> Self {
-        Self::Error { status, original_command_id }
+        Self::Error {
+            status,
+            original_command_id,
+        }
     }
 
     /// Build an `RxPacket` response from a byte slice. Errors if `data` exceeds
@@ -170,7 +176,11 @@ impl Response {
     pub fn rx_packet(data: &[u8], rssi: i16, snr: i8) -> Result<Self, CapacityError> {
         let mut buf = Vec::new();
         buf.extend_from_slice(data).map_err(|_| CapacityError)?;
-        Ok(Response::RxPacket { data: buf, rssi, snr })
+        Ok(Response::RxPacket {
+            data: buf,
+            rssi,
+            snr,
+        })
     }
 }
 

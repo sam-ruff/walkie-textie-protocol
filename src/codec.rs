@@ -4,9 +4,7 @@
 //! CRC-16-XMODEM over `[version][id][length][payload]`, then COBS-encoded with a
 //! trailing `0x00` delimiter.
 
-use crate::types::{
-    CapacityError, Command, CommandId, Response, ResponseId, ResponseStatus,
-};
+use crate::types::{CapacityError, Command, CommandId, Response, ResponseId, ResponseStatus};
 use crate::{MAX_FRAME_SIZE, PROTOCOL_VERSION};
 use crc::{Crc, CRC_16_XMODEM};
 use heapless::Vec;
@@ -52,7 +50,8 @@ fn cobs_encode(raw: &[u8]) -> Vec<u8, MAX_FRAME_SIZE> {
 /// COBS-decode a frame (delimiter included), for tests/verification.
 pub fn cobs_decode(encoded: &[u8]) -> Result<Vec<u8, MAX_FRAME_SIZE>, ParseError> {
     let mut out: Vec<u8, MAX_FRAME_SIZE> = Vec::new();
-    out.resize(encoded.len(), 0).map_err(|_| ParseError::TooShort)?;
+    out.resize(encoded.len(), 0)
+        .map_err(|_| ParseError::TooShort)?;
     let len = corncobs::decode_buf(encoded, &mut out).map_err(|_| ParseError::BadPayload)?;
     out.truncate(len);
     Ok(out)
@@ -103,7 +102,11 @@ pub fn parse_response(data: &[u8]) -> Result<Response, ParseError> {
             if payload.len() != 3 {
                 return Err(ParseError::BadPayload);
             }
-            Ok(Response::Version { major: payload[0], minor: payload[1], patch: payload[2] })
+            Ok(Response::Version {
+                major: payload[0],
+                minor: payload[1],
+                patch: payload[2],
+            })
         }
         Some(ResponseId::TxComplete) => Ok(Response::TxComplete),
         Some(ResponseId::RxPacket) => {
@@ -141,8 +144,12 @@ pub fn parse_response(data: &[u8]) -> Result<Response, ParseError> {
             if payload.len() != 2 {
                 return Err(ParseError::BadPayload);
             }
-            let status = ResponseStatus::from_byte(payload[0]).unwrap_or(ResponseStatus::InvalidCommand);
-            Ok(Response::Error { status, original_command_id: payload[1] })
+            let status =
+                ResponseStatus::from_byte(payload[0]).unwrap_or(ResponseStatus::InvalidCommand);
+            Ok(Response::Error {
+                status,
+                original_command_id: payload[1],
+            })
         }
         None => Err(ParseError::UnknownId(id)),
     }
@@ -182,7 +189,9 @@ pub fn parse_command(data: &[u8]) -> Result<Command, ResponseStatus> {
             if payload.len() != 1 {
                 return Err(ResponseStatus::InvalidLength);
             }
-            Ok(Command::SetSpreadingFactor { spreading_factor: payload[0] })
+            Ok(Command::SetSpreadingFactor {
+                spreading_factor: payload[0],
+            })
         }
         Some(CommandId::GetRadioConfig) => {
             if !payload.is_empty() {
@@ -197,9 +206,11 @@ pub fn parse_command(data: &[u8]) -> Result<Command, ResponseStatus> {
 /// Encode a response into a COBS frame ready for the wire.
 pub fn encode_response(response: &Response) -> Vec<u8, MAX_FRAME_SIZE> {
     let raw = match response {
-        Response::Version { major, minor, patch } => {
-            build_raw(ResponseId::Version as u8, &[*major, *minor, *patch])
-        }
+        Response::Version {
+            major,
+            minor,
+            patch,
+        } => build_raw(ResponseId::Version as u8, &[*major, *minor, *patch]),
         Response::TxComplete => build_raw(ResponseId::TxComplete as u8, &[]),
         Response::RxPacket { data, rssi, snr } => {
             let mut payload: Vec<u8, MAX_FRAME_SIZE> = Vec::new();
@@ -226,9 +237,13 @@ pub fn encode_response(response: &Response) -> Vec<u8, MAX_FRAME_SIZE> {
         Response::TxRefused { retry_after_secs } => {
             build_raw(ResponseId::TxRefused as u8, &retry_after_secs.to_le_bytes())
         }
-        Response::Error { status, original_command_id } => {
-            build_raw(ResponseId::Error as u8, &[*status as u8, *original_command_id])
-        }
+        Response::Error {
+            status,
+            original_command_id,
+        } => build_raw(
+            ResponseId::Error as u8,
+            &[*status as u8, *original_command_id],
+        ),
     };
     cobs_encode(&raw)
 }
@@ -246,18 +261,28 @@ mod tests {
     #[test]
     fn kat_get_version_command() {
         let frame = encode_command(&Command::GetVersion);
-        assert_eq!(frame.as_slice(), &[0x03, 0x01, 0x01, 0x01, 0x03, 0x84, 0x41, 0x00]);
+        assert_eq!(
+            frame.as_slice(),
+            &[0x03, 0x01, 0x01, 0x01, 0x03, 0x84, 0x41, 0x00]
+        );
     }
 
     #[test]
     fn kat_reboot_command() {
         let frame = encode_command(&Command::Reboot);
-        assert_eq!(frame.as_slice(), &[0x03, 0x01, 0x03, 0x01, 0x03, 0xe4, 0x2f, 0x00]);
+        assert_eq!(
+            frame.as_slice(),
+            &[0x03, 0x01, 0x03, 0x01, 0x03, 0xe4, 0x2f, 0x00]
+        );
     }
 
     #[test]
     fn kat_version_response() {
-        let frame = encode_response(&Response::Version { major: 0, minor: 1, patch: 0 });
+        let frame = encode_response(&Response::Version {
+            major: 0,
+            minor: 1,
+            patch: 0,
+        });
         assert_eq!(
             frame.as_slice(),
             &[0x04, 0x01, 0x01, 0x03, 0x01, 0x02, 0x01, 0x03, 0x22, 0x20, 0x00]
@@ -283,7 +308,11 @@ mod tests {
     #[test]
     fn version_and_error_round_trip() {
         for resp in [
-            Response::Version { major: 1, minor: 2, patch: 3 },
+            Response::Version {
+                major: 1,
+                minor: 2,
+                patch: 3,
+            },
             Response::TxComplete,
             Response::error(ResponseStatus::Timeout, CommandId::LoraTx),
         ] {
@@ -295,7 +324,9 @@ mod tests {
     #[test]
     fn radio_config_commands_round_trip_device_side() {
         for cmd in [
-            Command::SetSpreadingFactor { spreading_factor: 12 },
+            Command::SetSpreadingFactor {
+                spreading_factor: 12,
+            },
             Command::GetRadioConfig,
         ] {
             let decoded = cobs_decode(&encode_command(&cmd)).unwrap();
@@ -329,7 +360,9 @@ mod tests {
     #[test]
     fn tx_refused_round_trips() {
         for secs in [0u32, 1_800, u32::MAX] {
-            let resp = Response::TxRefused { retry_after_secs: secs };
+            let resp = Response::TxRefused {
+                retry_after_secs: secs,
+            };
             let decoded = cobs_decode(&encode_response(&resp)).unwrap();
             assert_eq!(parse_response(&decoded), Ok(resp));
         }
