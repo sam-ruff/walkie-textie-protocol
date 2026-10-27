@@ -31,6 +31,4 @@ pub use codec::{
     cobs_decode, crc16, encode_command, encode_response, parse_command, parse_response, ParseError,
 };
 pub use framing::FrameAccumulator;
-pub use types::{
-    CapacityError, Command, CommandId, Response, ResponseId, ResponseStatus,
-};
+pub use types::{CapacityError, Command, CommandId, Response, ResponseId, ResponseStatus};
