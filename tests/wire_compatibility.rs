@@ -1,7 +1,7 @@
 //! Wire and capacity regressions for the CRC, COBS and heapless dependencies.
 use wt_protocol::{
     cobs_decode, crc16, encode_command, encode_response, parse_command, parse_response, Command,
-    FrameAccumulator, ParseError, Response, MAX_LORA_PAYLOAD,
+    FrameAccumulator, ParseError, Response, ResponseStatus, MAX_FRAME_SIZE, MAX_LORA_PAYLOAD,
 };
 
 #[test]
@@ -82,4 +82,30 @@ fn stream_delimiters_preserve_consecutive_maximum_frames() {
         assert_eq!(parse_command(&cobs_decode(&received).unwrap()), Ok(command));
         assert!(accumulator.is_empty());
     }
+}
+
+#[test]
+fn unknown_ids_are_rejected_in_both_directions() {
+    // A valid CRC under an id neither side defines.
+    let mut raw = cobs_decode(&encode_command(&Command::GetVersion)).unwrap();
+    raw[1] = 0x7e;
+    let crc = crc16(&raw[..4]).to_le_bytes();
+    raw[4..6].copy_from_slice(&crc);
+    assert_eq!(parse_command(&raw), Err(ResponseStatus::InvalidCommand));
+    assert_eq!(parse_response(&raw), Err(ParseError::UnknownId(0x7e)));
+}
+
+#[test]
+fn accumulator_recovers_after_an_oversized_frame() {
+    let mut accumulator = FrameAccumulator::new();
+    for _ in 0..MAX_FRAME_SIZE + 10 {
+        assert!(accumulator.push(0xab).is_none());
+    }
+    assert!(accumulator.len() < MAX_FRAME_SIZE);
+    // The overflowed tail surfaces as a frame that fails to decode cleanly.
+    let junk = accumulator.push(0).unwrap();
+    assert!(cobs_decode(&junk).map_or(true, |raw| parse_command(&raw).is_err()));
+    let frame = encode_command(&Command::GetVersion);
+    let received = frame.iter().find_map(|&byte| accumulator.push(byte));
+    assert_eq!(received.as_deref(), Some(frame.as_slice()));
 }
