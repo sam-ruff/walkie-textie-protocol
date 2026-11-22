@@ -34,13 +34,13 @@ jobs:
         run: cargo build --target riscv32imc-unknown-none-elf --locked
 
   msrv:
-    name: Rust 1.87 minimum supported version
+    name: Rust 1.88 minimum supported version
     runs-on: [self-hosted, sophie]
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: riscv32imc-unknown-none-elf
 
