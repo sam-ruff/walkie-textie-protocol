@@ -2,6 +2,7 @@
 use wt_protocol::{
     cobs_decode, crc16, encode_command, encode_response, parse_command, parse_response, Command,
     FrameAccumulator, ParseError, Response, ResponseStatus, MAX_FRAME_SIZE, MAX_LORA_PAYLOAD,
+    PROTOCOL_VERSION,
 };
 
 #[test]
@@ -108,4 +109,43 @@ fn accumulator_recovers_after_an_oversized_frame() {
     let frame = encode_command(&Command::GetVersion);
     let received = frame.iter().find_map(|&byte| accumulator.push(byte));
     assert_eq!(received.as_deref(), Some(frame.as_slice()));
+}
+
+/// Build a CRC-valid raw frame by hand so payloads beyond the codec's own
+/// capacity checks reach the parsers.
+fn raw_frame(id: u8, payload: &[u8]) -> Vec<u8> {
+    let mut raw = vec![PROTOCOL_VERSION, id];
+    raw.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    raw.extend_from_slice(payload);
+    let crc = crc16(&raw).to_le_bytes();
+    raw.extend_from_slice(&crc);
+    raw
+}
+
+#[test]
+fn over_capacity_payloads_in_valid_frames_are_rejected_cleanly() {
+    // heapless 0.9.4 reworked `Vec::extend_from_slice` overflow handling; a
+    // payload one byte past capacity must still fail instead of truncating.
+    for length in [MAX_LORA_PAYLOAD + 1, MAX_FRAME_SIZE - 6] {
+        let payload = vec![0xab; length];
+        let command = raw_frame(0x10, &payload);
+        assert_eq!(parse_command(&command), Err(ResponseStatus::InvalidLength));
+        let mut rx = payload.clone();
+        rx.extend_from_slice(&[0x9c, 0xff, 0xf6]);
+        let response = raw_frame(0x11, &rx);
+        assert_eq!(parse_response(&response), Err(ParseError::BadPayload));
+    }
+    let fits = raw_frame(0x10, &[0xab; MAX_LORA_PAYLOAD]);
+    assert_eq!(
+        parse_command(&fits),
+        Command::lora_tx(&[0xab; MAX_LORA_PAYLOAD]).map_err(|_| ResponseStatus::InvalidLength)
+    );
+}
+
+#[test]
+fn declared_length_beyond_the_frame_is_too_short() {
+    let mut raw = raw_frame(0x10, b"hi");
+    raw[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert_eq!(parse_command(&raw), Err(ResponseStatus::InvalidLength));
+    assert_eq!(parse_response(&raw), Err(ParseError::TooShort));
 }
