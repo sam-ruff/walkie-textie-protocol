@@ -4,7 +4,10 @@
 //! CRC-16-XMODEM over `[version][id][length][payload]`, then COBS-encoded with a
 //! trailing `0x00` delimiter.
 
-use crate::types::{CapacityError, Command, CommandId, Response, ResponseId, ResponseStatus};
+use crate::types::{
+    BoxStatus, CapacityError, Command, CommandId, Response, ResponseId, ResponseStatus,
+    MAX_BOX_NAME,
+};
 use crate::{MAX_FRAME_SIZE, PROTOCOL_VERSION};
 use crc::{Crc, CRC_16_XMODEM};
 use heapless::Vec;
@@ -90,8 +93,84 @@ pub fn encode_command(command: &Command) -> Vec<u8, MAX_FRAME_SIZE> {
             build_raw(CommandId::SetSpreadingFactor as u8, &[*spreading_factor])
         }
         Command::GetRadioConfig => build_raw(CommandId::GetRadioConfig as u8, &[]),
+        Command::GetBoxStatus => build_raw(CommandId::GetBoxStatus as u8, &[]),
     };
     cobs_encode(&raw)
+}
+
+// BoxStatus payload, all integers little-endian:
+// [layout:u8][flags:u8][satellites:u8][battery:u8][clients:u8][lat_e7:i32][lon_e7:i32]
+// [ssid_len:u8][ssid][host_len:u8][hostname]
+// 0xFF means unknown for satellites and battery. Later layouts only append, so
+// a parser ignores bytes it does not know.
+const BOX_STATUS_LAYOUT: u8 = 1;
+const BOX_UNKNOWN: u8 = 0xFF;
+const FLAG_GPS_FIX: u8 = 1 << 0;
+const FLAG_POSITION: u8 = 1 << 1;
+const FLAG_CARD_OK: u8 = 1 << 2;
+const FLAG_WIFI_ON: u8 = 1 << 3;
+
+fn encode_box_status(status: &BoxStatus) -> Vec<u8, MAX_FRAME_SIZE> {
+    let flag = |on: bool, bit: u8| if on { bit } else { 0 };
+    let flags = flag(status.gps_fix, FLAG_GPS_FIX)
+        | flag(status.position_e7.is_some(), FLAG_POSITION)
+        | flag(status.card_ok, FLAG_CARD_OK)
+        | flag(status.wifi_on, FLAG_WIFI_ON);
+    let (lat, lon) = status.position_e7.unwrap_or((0, 0));
+    let mut payload: Vec<u8, MAX_FRAME_SIZE> = Vec::new();
+    let _ = payload.extend_from_slice(&[
+        BOX_STATUS_LAYOUT,
+        flags,
+        status.satellites.unwrap_or(BOX_UNKNOWN),
+        status.battery_percent.unwrap_or(BOX_UNKNOWN),
+        status.wifi_clients,
+    ]);
+    let _ = payload.extend_from_slice(&lat.to_le_bytes());
+    let _ = payload.extend_from_slice(&lon.to_le_bytes());
+    for text in [status.wifi_ssid.as_str(), status.hostname.as_str()] {
+        let _ = payload.push(text.len() as u8);
+        let _ = payload.extend_from_slice(text.as_bytes());
+    }
+    payload
+}
+
+/// Reads a length-prefixed string at `at`, returning it and the offset after it.
+fn read_name(
+    payload: &[u8],
+    at: usize,
+) -> Result<(heapless::String<MAX_BOX_NAME>, usize), ParseError> {
+    let len = *payload.get(at).ok_or(ParseError::BadPayload)? as usize;
+    let bytes = payload
+        .get(at + 1..at + 1 + len)
+        .ok_or(ParseError::BadPayload)?;
+    let text = core::str::from_utf8(bytes).map_err(|_| ParseError::BadPayload)?;
+    let mut name = heapless::String::new();
+    name.push_str(text).map_err(|_| ParseError::BadPayload)?;
+    Ok((name, at + 1 + len))
+}
+
+fn parse_box_status(payload: &[u8]) -> Result<BoxStatus, ParseError> {
+    const FIXED: usize = 13;
+    if payload.len() < FIXED || payload[0] < BOX_STATUS_LAYOUT {
+        return Err(ParseError::BadPayload);
+    }
+    let known = |byte: u8| (byte != BOX_UNKNOWN).then_some(byte);
+    let flags = payload[1];
+    let lat = i32::from_le_bytes([payload[5], payload[6], payload[7], payload[8]]);
+    let lon = i32::from_le_bytes([payload[9], payload[10], payload[11], payload[12]]);
+    let (wifi_ssid, next) = read_name(payload, FIXED)?;
+    let (hostname, _) = read_name(payload, next)?;
+    Ok(BoxStatus {
+        gps_fix: flags & FLAG_GPS_FIX != 0,
+        position_e7: (flags & FLAG_POSITION != 0).then_some((lat, lon)),
+        satellites: known(payload[2]),
+        battery_percent: known(payload[3]),
+        card_ok: flags & FLAG_CARD_OK != 0,
+        wifi_on: flags & FLAG_WIFI_ON != 0,
+        wifi_clients: payload[4],
+        wifi_ssid,
+        hostname,
+    })
 }
 
 /// Parse a COBS-decoded frame into a response.
@@ -140,6 +219,7 @@ pub fn parse_response(data: &[u8]) -> Result<Response, ParseError> {
                 ]),
             })
         }
+        Some(ResponseId::BoxStatus) => parse_box_status(payload).map(Response::BoxStatus),
         Some(ResponseId::Error) => {
             if payload.len() != 2 {
                 return Err(ParseError::BadPayload);
@@ -199,6 +279,12 @@ pub fn parse_command(data: &[u8]) -> Result<Command, ResponseStatus> {
             }
             Ok(Command::GetRadioConfig)
         }
+        Some(CommandId::GetBoxStatus) => {
+            if !payload.is_empty() {
+                return Err(ResponseStatus::InvalidLength);
+            }
+            Ok(Command::GetBoxStatus)
+        }
         None => Err(ResponseStatus::InvalidCommand),
     }
 }
@@ -236,6 +322,9 @@ pub fn encode_response(response: &Response) -> Vec<u8, MAX_FRAME_SIZE> {
         }
         Response::TxRefused { retry_after_secs } => {
             build_raw(ResponseId::TxRefused as u8, &retry_after_secs.to_le_bytes())
+        }
+        Response::BoxStatus(status) => {
+            build_raw(ResponseId::BoxStatus as u8, &encode_box_status(status))
         }
         Response::Error {
             status,
@@ -395,6 +484,88 @@ mod tests {
         let just_fits = [0xAB; MAX_LORA_PAYLOAD];
         assert!(Command::lora_tx(&just_fits).is_ok());
         assert!(Response::rx_packet(&just_fits, -50, 5).is_ok());
+    }
+
+    fn name(text: &str) -> heapless::String<MAX_BOX_NAME> {
+        let mut out = heapless::String::new();
+        out.push_str(text).unwrap();
+        out
+    }
+
+    fn full_status() -> BoxStatus {
+        BoxStatus {
+            gps_fix: true,
+            position_e7: Some((514_816_000, -31_791_000)),
+            satellites: Some(9),
+            battery_percent: Some(87),
+            card_ok: true,
+            wifi_on: true,
+            wifi_clients: 2,
+            wifi_ssid: name("World Box"),
+            hostname: name("world.local"),
+        }
+    }
+
+    #[test]
+    fn get_box_status_round_trips_device_side() {
+        let decoded = cobs_decode(&encode_command(&Command::GetBoxStatus)).unwrap();
+        assert_eq!(parse_command(&decoded), Ok(Command::GetBoxStatus));
+        let raw = build_raw(CommandId::GetBoxStatus as u8, &[1]);
+        assert_eq!(parse_command(&raw), Err(ResponseStatus::InvalidLength));
+    }
+
+    #[test]
+    fn box_status_round_trips_full_and_unknown() {
+        let unknown = BoxStatus {
+            wifi_ssid: name("Box"),
+            ..BoxStatus::default()
+        };
+        for status in [full_status(), unknown] {
+            let resp = Response::BoxStatus(status);
+            let decoded = cobs_decode(&encode_response(&resp)).unwrap();
+            assert_eq!(parse_response(&decoded), Ok(resp));
+        }
+    }
+
+    #[test]
+    fn kat_box_status_payload() {
+        let raw = cobs_decode(&encode_response(&Response::BoxStatus(full_status()))).unwrap();
+        let payload = &raw[4..raw.len() - 2];
+        let mut expected = std::vec![1, 0b1111, 9, 87, 2];
+        expected.extend_from_slice(&514_816_000i32.to_le_bytes());
+        expected.extend_from_slice(&(-31_791_000i32).to_le_bytes());
+        expected.push(9);
+        expected.extend_from_slice(b"World Box");
+        expected.push(11);
+        expected.extend_from_slice(b"world.local");
+        assert_eq!(payload, expected.as_slice());
+    }
+
+    #[test]
+    fn box_status_ignores_bytes_from_later_layouts() {
+        let mut payload = encode_box_status(&full_status());
+        payload[0] = 2;
+        payload.extend_from_slice(&[0xAA, 0xBB]).unwrap();
+        let raw = build_raw(ResponseId::BoxStatus as u8, &payload);
+        assert_eq!(parse_response(&raw), Ok(Response::BoxStatus(full_status())));
+    }
+
+    #[test]
+    fn malformed_box_status_is_rejected() {
+        let good = encode_box_status(&full_status());
+        // Cut inside the hostname, and a name claiming to run past the end.
+        for payload in [&good[..good.len() - 1], &good[..12]] {
+            let raw = build_raw(ResponseId::BoxStatus as u8, payload);
+            assert_eq!(parse_response(&raw), Err(ParseError::BadPayload));
+        }
+        let mut bad_utf8 = good.clone();
+        bad_utf8[14] = 0xFF;
+        let raw = build_raw(ResponseId::BoxStatus as u8, &bad_utf8);
+        assert_eq!(parse_response(&raw), Err(ParseError::BadPayload));
+        let mut layout_zero = good;
+        layout_zero[0] = 0;
+        let raw = build_raw(ResponseId::BoxStatus as u8, &layout_zero);
+        assert_eq!(parse_response(&raw), Err(ParseError::BadPayload));
     }
 
     #[test]

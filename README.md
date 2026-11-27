@@ -27,9 +27,15 @@ then COBS-encoded with a trailing `0x00` delimiter.
 | host -> device | 0x01 | GetVersion |
 | host -> device | 0x03 | Reboot |
 | host -> device | 0x10 | LoraTx (data) |
+| host -> device | 0x11 | SetSpreadingFactor (7-12) |
+| host -> device | 0x12 | GetRadioConfig |
+| host -> device | 0x20 | GetBoxStatus (World Box only; a plain radio answers InvalidCommand) |
 | device -> host | 0x01 | Version (major, minor, patch) |
 | device -> host | 0x10 | TxComplete |
 | device -> host | 0x11 | RxPacket (data, rssi i16 LE, snr i8) |
+| device -> host | 0x12 | RadioConfig |
+| device -> host | 0x13 | TxRefused (retry after, seconds) |
+| device -> host | 0x20 | BoxStatus (GPS, battery, card, WiFi name and hostname; never the WiFi password) |
 | device -> host | 0xFF | Error (status, original command id) |
 
 ## Use

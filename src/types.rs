@@ -17,6 +17,9 @@ pub enum CommandId {
     SetSpreadingFactor = 0x11,
     /// Read the active radio configuration.
     GetRadioConfig = 0x12,
+    /// Read a World Box's status. A plain radio answers `InvalidCommand`,
+    /// which is how the app tells the two apart.
+    GetBoxStatus = 0x20,
 }
 
 impl CommandId {
@@ -27,6 +30,7 @@ impl CommandId {
             0x10 => Some(Self::LoraTx),
             0x11 => Some(Self::SetSpreadingFactor),
             0x12 => Some(Self::GetRadioConfig),
+            0x20 => Some(Self::GetBoxStatus),
             _ => None,
         }
     }
@@ -41,6 +45,7 @@ pub enum ResponseId {
     RxPacket = 0x11,
     RadioConfig = 0x12,
     TxRefused = 0x13,
+    BoxStatus = 0x20,
     Error = 0xFF,
 }
 
@@ -52,6 +57,7 @@ impl ResponseId {
             0x11 => Some(Self::RxPacket),
             0x12 => Some(Self::RadioConfig),
             0x13 => Some(Self::TxRefused),
+            0x20 => Some(Self::BoxStatus),
             0xFF => Some(Self::Error),
             _ => None,
         }
@@ -67,6 +73,7 @@ pub enum Command {
     LoraTx { data: Vec<u8, MAX_LORA_PAYLOAD> },
     SetSpreadingFactor { spreading_factor: u8 },
     GetRadioConfig,
+    GetBoxStatus,
 }
 
 impl Command {
@@ -78,6 +85,7 @@ impl Command {
             Command::LoraTx { .. } => CommandId::LoraTx,
             Command::SetSpreadingFactor { .. } => CommandId::SetSpreadingFactor,
             Command::GetRadioConfig => CommandId::GetRadioConfig,
+            Command::GetBoxStatus => CommandId::GetBoxStatus,
         }
     }
 
@@ -149,6 +157,8 @@ pub enum Response {
     /// means the packet exceeds the entire hourly budget and can never be
     /// sent with the current radio settings.
     TxRefused { retry_after_secs: u32 },
+    /// A World Box's status (reply to GetBoxStatus).
+    BoxStatus(BoxStatus),
     /// Error with a status code and the originating command id.
     Error {
         status: ResponseStatus,
@@ -182,6 +192,29 @@ impl Response {
             snr,
         })
     }
+}
+
+/// Longest WiFi network name or hostname carried in [`BoxStatus`].
+pub const MAX_BOX_NAME: usize = 32;
+
+/// What a World Box reports about itself, so the app can show it and find the
+/// box's WiFi for the map. The WiFi password is never sent: Bluetooth here is
+/// not encrypted.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BoxStatus {
+    pub gps_fix: bool,
+    /// Latitude and longitude in units of 1e-7 degrees, when there is a fix.
+    pub position_e7: Option<(i32, i32)>,
+    pub satellites: Option<u8>,
+    pub battery_percent: Option<u8>,
+    /// The SD card's datasets opened.
+    pub card_ok: bool,
+    /// The WiFi access point is up.
+    pub wifi_on: bool,
+    pub wifi_clients: u8,
+    pub wifi_ssid: heapless::String<MAX_BOX_NAME>,
+    /// Where the map is served, such as `world.local`.
+    pub hostname: heapless::String<MAX_BOX_NAME>,
 }
 
 /// A payload exceeded [`MAX_LORA_PAYLOAD`].
